@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Eye Tracker Dashboard</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body { background-color: #111; color: #0f0; font-family: monospace; padding: 20px; display: flex; gap: 40px; }
+        .panel { background: #222; padding: 20px; border-radius: 10px; border: 1px solid #444; }
+        img { border: 2px solid lime; border-radius: 8px; width: 480px; height: 360px; background: #000; }
+        h2, h3 { margin-top: 0; }
+        .data-row { font-size: 20px; margin: 15px 0; }
+        strong { color: white; }
+    </style>
+</head>
+<body>
+
+    <div class="panel">
+        <h2>Live Vision Feed</h2>
+        <img id="video-stream" src="" alt="Waiting for Python Camera..." />
+    </div>
+    
+    <div class="panel">
+        <h2>Telemetry Data</h2>
+        <h3 id="status" style="color: yellow;">Connecting to Node server...</h3>
+        
+        <div class="data-row">Horizontal Gaze: <strong id="h-angle">0°</strong></div>
+        <div class="data-row">Vertical Gaze: <strong id="v-angle">0°</strong></div>
+        <hr style="border-color: #444;">
+        <div class="data-row">Head Tilt (Roll): <strong id="tilt-angle">0°</strong></div>
+        <hr style="border-color: #444;">
+        <div class="data-row">Raw X: <strong id="x-val">0.000</strong></div>
+        <div class="data-row">Raw Y: <strong id="y-val">0.000</strong></div>
+    </div>
+
+    <script>
+        const socket = io('http://localhost:5000');
+        
+        // DOM Elements
+        const statusEl = document.getElementById('status');
+        const videoEl = document.getElementById('video-stream');
+        const xEl = document.getElementById('x-val');
+        const yEl = document.getElementById('y-val');
+        const hAngleEl = document.getElementById('h-angle');
+        const vAngleEl = document.getElementById('v-angle');
+        const tiltAngleEl = document.getElementById('tilt-angle');
+
+        socket.on('connect', () => {
+            statusEl.innerText = "🟢 Connected to Node Relay!";
+            statusEl.style.color = "lime";
+        });
+
+        socket.on('disconnect', () => {
+            statusEl.innerText = "🔴 Disconnected.";
+            statusEl.style.color = "red";
+        });
+
+        // Process incoming data
+        socket.on('pupil_move', (data) => {
+            // 1. Update the Live Image
+            videoEl.src = data.video_frame;
+
+            // 2. Update Raw Average Coordinates
+            xEl.innerText = data.average.x.toFixed(3);
+            yEl.innerText = data.average.y.toFixed(3);
+
+            // 3. Calculate Gaze Degrees
+            // Center is 0.5. Assuming a rough 60° horizontal FOV and 45° vertical FOV
+            const horizontalDeg = ((data.average.x - 0.5) * 60).toFixed(1);
+            const verticalDeg = ((data.average.y - 0.5) * -45).toFixed(1); // Invert Y so up is positive
+            
+            hAngleEl.innerText = `${horizontalDeg > 0 ? '+' : ''}${horizontalDeg}° (Left/Right)`;
+            vAngleEl.innerText = `${verticalDeg > 0 ? '+' : ''}${verticalDeg}° (Up/Down)`;
+
+            // 4. Calculate Head Tilt (Roll Degrees between Left and Right eye)
+            const dy = data.right.y - data.left.y;
+            const dx = data.right.x - data.left.x;
+            const tiltDeg = (Math.atan2(dy, dx) * (180 / Math.PI)).toFixed(1);
+            
+            tiltAngleEl.innerText = `${tiltDeg > 0 ? '+' : ''}${tiltDeg}°`;
+        });
+    </script>
+</body>
+</html>

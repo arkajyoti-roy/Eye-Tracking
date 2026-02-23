@@ -1,0 +1,76 @@
+import cv2
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+import numpy as np
+import urllib.request
+import os
+
+class EyeTracker:
+    def __init__(self):
+        self.model_path = 'face_landmarker.task'
+        if not os.path.exists(self.model_path):
+            print("Downloading Face Landmarker model...")
+            url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+            urllib.request.urlretrieve(url, self.model_path)
+
+        base_options = python.BaseOptions(model_asset_path=self.model_path)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+            num_faces=1
+        )
+        self.detector = vision.FaceLandmarker.create_from_options(options)
+        self.cap = cv2.VideoCapture(0)
+        
+        # Indices for BOTH eyes
+        self.LEFT_IRIS = [474, 475, 476, 477]
+        self.RIGHT_IRIS = [469, 470, 471, 472]
+
+    def get_pupil_coords(self):
+        success, frame = self.cap.read()
+        if not success:
+            return None
+
+        frame = cv2.flip(frame, 1)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, _ = frame.shape
+        
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        detection_result = self.detector.detect(mp_image)
+
+        coords = None
+
+        if detection_result.face_landmarks:
+            landmarks = detection_result.face_landmarks[0]
+            
+            # 1. Process Left Eye
+            left_pts = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in self.LEFT_IRIS]
+            (lcx, lcy), l_radius = cv2.minEnclosingCircle(np.array(left_pts, dtype=np.int32))
+            
+            # 2. Process Right Eye
+            right_pts = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in self.RIGHT_IRIS]
+            (rcx, rcy), r_radius = cv2.minEnclosingCircle(np.array(right_pts, dtype=np.int32))
+            
+            # Draw Green Circles on BOTH eyes
+            cv2.circle(frame, (int(lcx), int(lcy)), int(l_radius), (0, 255, 0), 2)
+            cv2.circle(frame, (int(rcx), int(rcy)), int(r_radius), (0, 255, 0), 2)
+            
+            # 3. Calculate Coordinates
+            coords = {
+                "left": {"x": lcx / w, "y": lcy / h},
+                "right": {"x": rcx / w, "y": rcy / h},
+                "average": {"x": ((lcx + rcx) / 2) / w, "y": ((lcy + rcy) / 2) / h}
+            }
+        else:
+            cv2.putText(frame, "No Face Detected!", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+        cv2.imshow("Python Vision Debug", frame)
+        cv2.waitKey(1) 
+
+        return coords
+
+    def release(self):
+        self.cap.release()
+        cv2.destroyAllWindows()
