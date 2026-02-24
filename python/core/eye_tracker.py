@@ -25,7 +25,6 @@ class EyeTracker:
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
         
-        # --- CAMERA SETUP (Default Resolution) ---
         self.cap = cv2.VideoCapture(0)
         
         self.LEFT_IRIS = [474, 475, 476, 477]
@@ -39,6 +38,12 @@ class EyeTracker:
         self.eye_closed = False
         self.ear_threshold = 0.22 
         self.attention_score = 100.0
+        self.smoothed_gaze_ratio = 0.5 
+
+        # --- NEW: CALIBRATION VARIABLES ---
+        self.is_calibrating = True
+        self.calibration_data = []
+        self.center_ratio = 0.5 # Will be replaced by your actual center
 
     def calculate_ear(self, landmarks, eye_indices):
         pts = [landmarks[i] for i in eye_indices]
@@ -92,8 +97,8 @@ class EyeTracker:
         fps = 1 / (current_time - self.prev_frame_time) if (current_time - self.prev_frame_time) > 0 else 0
         self.prev_frame_time = current_time
         
-        elapsed = int(current_time - self.start_time)
-        session_time = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+        elapsed = current_time - self.start_time
+        session_time = f"{int(elapsed) // 60:02d}:{int(elapsed) % 60:02d}"
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         detection_result = self.detector.detect(mp_image)
@@ -116,52 +121,72 @@ class EyeTracker:
 
             head_dir = self.get_head_direction(landmarks)
 
-            # Pupil centers
             left_pts = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in self.LEFT_IRIS]
             (lcx, lcy), l_radius = cv2.minEnclosingCircle(np.array(left_pts, dtype=np.int32))
             
             right_pts = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in self.RIGHT_IRIS]
             (rcx, rcy), r_radius = cv2.minEnclosingCircle(np.array(right_pts, dtype=np.int32))
             
-            # Eye socket geometric centers
             left_eye_center_x = (landmarks[362].x + landmarks[263].x) / 2.0 * w
             left_eye_center_y = (landmarks[385].y + landmarks[373].y) / 2.0 * h
             right_eye_center_x = (landmarks[33].x + landmarks[133].x) / 2.0 * w
             right_eye_center_y = (landmarks[160].y + landmarks[144].y) / 2.0 * h
             
-            # --- NEW: Red dot perfectly centered between the two eyes ---
             mid_eyes_x = int((left_eye_center_x + right_eye_center_x) / 2.0)
             mid_eyes_y = int((left_eye_center_y + right_eye_center_y) / 2.0)
             cv2.circle(frame, (mid_eyes_x, mid_eyes_y), 4, (0, 0, 255), -1)
 
-            # Draw circles on the pupils (Lines removed!)
             cv2.circle(frame, (int(lcx), int(lcy)), int(l_radius)+2, (0, 255, 0), 2)
             cv2.circle(frame, (int(rcx), int(rcy)), int(r_radius)+2, (0, 255, 0), 2)
 
-            # Gaze Text Logic
             gaze_dir = "FORWARD"
-            avg_gaze_ratio = 0.5 
+            display_gaze = "CALIBRATING..."
             
-            if head_dir == "FORWARD":
-                l_min_x = min(landmarks[362].x, landmarks[263].x) * w
-                l_max_x = max(landmarks[362].x, landmarks[263].x) * w
+            if head_dir == "FORWARD" and not self.eye_closed:
+                l_eye_xs = [landmarks[i].x * w for i in self.LEFT_EYE]
+                l_min_x, l_max_x = min(l_eye_xs), max(l_eye_xs)
                 l_ratio = (lcx - l_min_x) / (l_max_x - l_min_x) if (l_max_x - l_min_x) > 0 else 0.5
 
-                r_min_x = min(landmarks[33].x, landmarks[133].x) * w
-                r_max_x = max(landmarks[33].x, landmarks[133].x) * w
+                r_eye_xs = [landmarks[i].x * w for i in self.RIGHT_EYE]
+                r_min_x, r_max_x = min(r_eye_xs), max(r_eye_xs)
                 r_ratio = (rcx - r_min_x) / (r_max_x - r_min_x) if (r_max_x - r_min_x) > 0 else 0.5
 
-                avg_gaze_ratio = (l_ratio + r_ratio) / 2.0
+                raw_gaze_ratio = (l_ratio + r_ratio) / 2.0
 
-                if avg_gaze_ratio < 0.43: gaze_dir = "RIGHT"
-                elif avg_gaze_ratio > 0.53: gaze_dir = "LEFT"
+                # --- PHASE 1: CALIBRATION SEQUENCE ---
+                if self.is_calibrating:
+                    self.calibration_data.append(raw_gaze_ratio)
+                    
+                    # Draw huge text on the screen telling the user to look straight
+                    countdown = 3 - int(elapsed)
+                    cv2.putText(frame, "CALIBRATING: LOOK STRAIGHT AT WEBCAM", (20, h - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                    cv2.putText(frame, f"Time remaining: {countdown}s", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-            display_gaze = f"{gaze_dir} ({avg_gaze_ratio:.2f})"
+                    if elapsed >= 3.0:
+                        # Find the average ratio from all the frames we just recorded
+                        self.center_ratio = sum(self.calibration_data) / len(self.calibration_data)
+                        self.is_calibrating = False
+                        print(f"✅ Calibration complete! Your True Center is: {self.center_ratio:.3f}")
+                
+                # --- PHASE 2: NORMAL TRACKING ---
+                else:
+                    self.smoothed_gaze_ratio = (self.smoothed_gaze_ratio * 0.8) + (raw_gaze_ratio * 0.2)
+                    
+                    # Dynamically calculate thresholds based on YOUR exact eyes
+                    # (0.04 means you only have to move your eye 4% off-center to trigger a turn)
+                    offset = 0.04 
+                    
+                    if self.smoothed_gaze_ratio < (self.center_ratio - offset): 
+                        gaze_dir = "RIGHT"
+                    elif self.smoothed_gaze_ratio > (self.center_ratio + offset): 
+                        gaze_dir = "LEFT"
+
+                    display_gaze = f"{gaze_dir} ({self.smoothed_gaze_ratio:.2f})"
 
             target_attn = 100.0
             if avg_ear < self.ear_threshold: target_attn -= 50 
             if head_dir != "FORWARD": target_attn -= 30        
-            if gaze_dir != "FORWARD": target_attn -= 20        
+            if gaze_dir != "FORWARD" and not self.is_calibrating: target_attn -= 20        
             self.attention_score = self.attention_score * 0.9 + target_attn * 0.1
 
             self.draw_dashboard(frame, fps, session_time, avg_ear, head_dir, display_gaze, self.attention_score)
