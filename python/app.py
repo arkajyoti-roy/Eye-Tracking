@@ -18,10 +18,10 @@ def main():
             time.sleep(0.01)
             
     except KeyboardInterrupt:
-        print("\n🛑 Session Stopped! Closing camera...")
+        print("Session Stopped! Closing camera...")
     finally:
         tracker.release()
-        print("✅ Camera released successfully.")
+        print("Camera released successfully.")
 
 if __name__ == '__main__':
     main()
