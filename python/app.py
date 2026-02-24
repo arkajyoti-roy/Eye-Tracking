@@ -1,45 +1,27 @@
-import socketio
 import time
 from core.eye_tracker import EyeTracker
 
-# Create a Socket.IO client
-sio = socketio.Client()
-
-@sio.event
-def connect():
-    print("✅ Connected to Node.js Server!")
-
-@sio.event
-def disconnect():
-    print("❌ Disconnected from Node.js Server!")
-
 def main():
-    # Connect to Node.js
-    try:
-        sio.connect('http://localhost:5000')
-    except Exception as e:
-        print(f"🚨 Could not connect to Node server: {e}")
-        print("Make sure your Node server (server.js) is running on port 5000!")
-        return
-
+    print("🚀 Starting Pure Real-Time Eye Tracker...")
     tracker = EyeTracker()
-    print("🎥 Starting camera loop...")
-
+    
+    print("🎥 Camera running. Press 'CTRL + C' in this terminal to stop.")
+    
     try:
-        # Simple loop running on the main thread! No blocking!
+        # The Main Vision Loop
         while True:
-            coords = tracker.get_pupil_coords()
-            if coords:
-                # Push the data to Node.js
-                sio.emit('python_data', coords)
+            # This function reads the camera, calculates the math, 
+            # and draws the dashboard window automatically.
+            tracker.get_pupil_coords()
             
-            time.sleep(0.01) # Small pause to save CPU
+            # A tiny pause so your CPU doesn't run at 100%
+            time.sleep(0.01)
             
     except KeyboardInterrupt:
-        print("Stopping...")
+        print("\n🛑 Session Stopped! Closing camera...")
     finally:
         tracker.release()
-        sio.disconnect()
+        print("✅ Camera released successfully.")
 
 if __name__ == '__main__':
     main()

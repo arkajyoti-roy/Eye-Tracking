@@ -5,7 +5,6 @@ from mediapipe.tasks.python import vision
 import numpy as np
 import urllib.request
 import os
-import base64
 import time
 import math
 
@@ -25,26 +24,23 @@ class EyeTracker:
             num_faces=1
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
+        
+        # --- CAMERA SETUP (Default Resolution) ---
         self.cap = cv2.VideoCapture(0)
         
-        # Landmarks for Iris
         self.LEFT_IRIS = [474, 475, 476, 477]
         self.RIGHT_IRIS = [469, 470, 471, 472]
-        
-        # Landmarks for Eye Contours (used for Blinks/EAR)
         self.LEFT_EYE = [362, 385, 387, 263, 373, 380]
         self.RIGHT_EYE = [33, 160, 158, 133, 153, 144]
 
-        # Metrics Tracking Variables
         self.start_time = time.time()
         self.prev_frame_time = time.time()
         self.blink_count = 0
         self.eye_closed = False
-        self.ear_threshold = 0.22 # Default threshold for blinks
+        self.ear_threshold = 0.22 
         self.attention_score = 100.0
 
     def calculate_ear(self, landmarks, eye_indices):
-        """Calculates the Eye Aspect Ratio (EAR) to detect blinks"""
         pts = [landmarks[i] for i in eye_indices]
         v1 = math.hypot(pts[1].x - pts[5].x, pts[1].y - pts[5].y)
         v2 = math.hypot(pts[2].x - pts[4].x, pts[2].y - pts[4].y)
@@ -52,20 +48,17 @@ class EyeTracker:
         return (v1 + v2) / (2.0 * h) if h != 0 else 0
 
     def get_head_direction(self, landmarks):
-        """Estimates head direction using 2D face edge ratios"""
         nose_tip = landmarks[1].x
         left_edge = landmarks[234].x
         right_edge = landmarks[454].x
         face_width = right_edge - left_edge
         if face_width == 0: return "FORWARD"
         ratio = (nose_tip - left_edge) / face_width
-        
         if ratio < 0.40: return "RIGHT"
         if ratio > 0.60: return "LEFT"
         return "FORWARD"
 
     def draw_dashboard(self, frame, fps, session_time, ear, head_dir, gaze_text, attention):
-        """Draws the grey stats overlay"""
         h, w, _ = frame.shape
         overlay = frame.copy()
         cv2.rectangle(overlay, (10, 10), (360, 260), (50, 50, 50), -1)
@@ -110,7 +103,6 @@ class EyeTracker:
         if detection_result.face_landmarks:
             landmarks = detection_result.face_landmarks[0]
             
-            # --- 1. EAR & Blinks ---
             left_ear = self.calculate_ear(landmarks, self.LEFT_EYE)
             right_ear = self.calculate_ear(landmarks, self.RIGHT_EYE)
             avg_ear = (left_ear + right_ear) / 2.0
@@ -122,80 +114,60 @@ class EyeTracker:
             else:
                 self.eye_closed = False
 
-            # --- 2. Head Direction ---
             head_dir = self.get_head_direction(landmarks)
-            nose_x, nose_y = int(landmarks[1].x * w), int(landmarks[1].y * h)
-            cv2.circle(frame, (nose_x, nose_y), 4, (0, 0, 255), -1)
 
-            # --- 3. Iris Coordinates ---
+            # Pupil centers
             left_pts = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in self.LEFT_IRIS]
             (lcx, lcy), l_radius = cv2.minEnclosingCircle(np.array(left_pts, dtype=np.int32))
             
             right_pts = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in self.RIGHT_IRIS]
             (rcx, rcy), r_radius = cv2.minEnclosingCircle(np.array(right_pts, dtype=np.int32))
             
-            cv2.circle(frame, (int(lcx), int(lcy)), int(l_radius)+2, (0, 255, 0), 2)
-            cv2.circle(frame, (int(rcx), int(rcy)), int(r_radius)+2, (0, 255, 0), 2)
-
-            # --- 4. GAZE VECTOR MATH (The Yellow Lines) ---
+            # Eye socket geometric centers
             left_eye_center_x = (landmarks[362].x + landmarks[263].x) / 2.0 * w
             left_eye_center_y = (landmarks[385].y + landmarks[373].y) / 2.0 * h
             right_eye_center_x = (landmarks[33].x + landmarks[133].x) / 2.0 * w
             right_eye_center_y = (landmarks[160].y + landmarks[144].y) / 2.0 * h
             
-            gaze_scale = 10 
-            left_end_x = int(lcx + (lcx - left_eye_center_x) * gaze_scale)
-            left_end_y = int(lcy + (lcy - left_eye_center_y) * gaze_scale)
-            right_end_x = int(rcx + (rcx - right_eye_center_x) * gaze_scale)
-            right_end_y = int(rcy + (rcy - right_eye_center_y) * gaze_scale)
+            # --- NEW: Red dot perfectly centered between the two eyes ---
+            mid_eyes_x = int((left_eye_center_x + right_eye_center_x) / 2.0)
+            mid_eyes_y = int((left_eye_center_y + right_eye_center_y) / 2.0)
+            cv2.circle(frame, (mid_eyes_x, mid_eyes_y), 4, (0, 0, 255), -1)
 
-            cv2.line(frame, (int(lcx), int(lcy)), (left_end_x, left_end_y), (0, 255, 255), 2)
-            cv2.line(frame, (int(rcx), int(rcy)), (right_end_x, right_end_y), (0, 255, 255), 2)
+            # Draw circles on the pupils (Lines removed!)
+            cv2.circle(frame, (int(lcx), int(lcy)), int(l_radius)+2, (0, 255, 0), 2)
+            cv2.circle(frame, (int(rcx), int(rcy)), int(r_radius)+2, (0, 255, 0), 2)
 
-            # --- 5. DUAL-EYE GAZE RATIO LOGIC ---
+            # Gaze Text Logic
             gaze_dir = "FORWARD"
             avg_gaze_ratio = 0.5 
             
             if head_dir == "FORWARD":
-                # Left Eye Ratio
                 l_min_x = min(landmarks[362].x, landmarks[263].x) * w
                 l_max_x = max(landmarks[362].x, landmarks[263].x) * w
                 l_ratio = (lcx - l_min_x) / (l_max_x - l_min_x) if (l_max_x - l_min_x) > 0 else 0.5
 
-                # Right Eye Ratio
                 r_min_x = min(landmarks[33].x, landmarks[133].x) * w
                 r_max_x = max(landmarks[33].x, landmarks[133].x) * w
                 r_ratio = (rcx - r_min_x) / (r_max_x - r_min_x) if (r_max_x - r_min_x) > 0 else 0.5
 
-                # Average both eyes
                 avg_gaze_ratio = (l_ratio + r_ratio) / 2.0
 
-                # Determine Direction (Tweak these numbers if needed!)
-                if avg_gaze_ratio < 0.43: 
-                    gaze_dir = "RIGHT"
-                elif avg_gaze_ratio > 0.53: 
-                    gaze_dir = "LEFT"
+                if avg_gaze_ratio < 0.43: gaze_dir = "RIGHT"
+                elif avg_gaze_ratio > 0.53: gaze_dir = "LEFT"
 
             display_gaze = f"{gaze_dir} ({avg_gaze_ratio:.2f})"
 
-            # --- 6. Attention Calculation ---
             target_attn = 100.0
             if avg_ear < self.ear_threshold: target_attn -= 50 
             if head_dir != "FORWARD": target_attn -= 30        
             if gaze_dir != "FORWARD": target_attn -= 20        
             self.attention_score = self.attention_score * 0.9 + target_attn * 0.1
 
-            # --- 7. Update Dashboard ---
             self.draw_dashboard(frame, fps, session_time, avg_ear, head_dir, display_gaze, self.attention_score)
-
-            # Package data for Node.js
-            small_frame = cv2.resize(frame, (640, 480))
-            _, buffer = cv2.imencode('.jpg', small_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
-            frame_base64 = base64.b64encode(buffer).decode('utf-8')
 
             coords = {
                 "average": {"x": ((lcx + rcx) / 2) / w, "y": ((lcy + rcy) / 2) / h},
-                "video_frame": f"data:image/jpeg;base64,{frame_base64}",
                 "metrics": {
                     "blinks": self.blink_count,
                     "ear": round(avg_ear, 3),
